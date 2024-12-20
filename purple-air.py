@@ -153,9 +153,9 @@ api_key = st.secrets["API_KEY"]
 # Date range selection
 col1, col2 = st.columns(2)
 with col1:
-    start_date = st.date_input("Start Date", datetime(2024, 11, 1))
+    start_date = st.date_input("Start Date", datetime(2024, 11, 1), min_value=datetime(2024,4,1), max_value=datetime(2024, 12, 8))
 with col2:
-    end_date = st.date_input("End Date", value=datetime(2024, 11, 21), max_value=datetime(2024, 12, 8))
+    end_date = st.date_input("End Date", value=datetime(2024, 11, 21), min_value=datetime(2024,4,1), max_value=datetime(2024, 12, 8))
 
 # Fields selection
 fields = ["pm2.5_atm", "humidity", "temperature"]
