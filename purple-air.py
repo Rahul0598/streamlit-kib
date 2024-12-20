@@ -3,6 +3,11 @@ import os
 import time
 from datetime import datetime, timedelta
 
+import pytz
+est = pytz.timezone('US/Eastern')
+utc = pytz.utc
+
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import requests
@@ -36,7 +41,8 @@ def fetch_sensor_data(sensor_id, api_key, start_date, end_date, fields):
     params = {
         "start_timestamp": start_timestamp,
         "end_timestamp": end_timestamp,
-        "fields": fields,
+        "fields": "temperature, humidity, pm2.5_atm",
+        "average": 60
     }
 
     response = requests.get(url, headers=headers, params=params)
@@ -48,13 +54,56 @@ def fetch_sensor_data(sensor_id, api_key, start_date, end_date, fields):
         return None
 
 
+# Convert US AQI from raw pm2.5 data
+def aqiFromPM(pm):
+    if not float(pm):
+        return "-"
+    if pm == 'undefined':
+        return np.nan
+    if pm < 0:
+        return pm
+    if pm > 1000:
+        return np.nan
+
+    if pm > 350.5:
+        return calcAQI(pm, 500, 401, 500.4, 350.5)  # Hazardous
+    elif pm > 250.5:
+        return calcAQI(pm, 400, 301, 350.4, 250.5)  # Hazardous
+    elif pm > 150.5:
+        return calcAQI(pm, 300, 201, 250.4, 150.5)  # Very Unhealthy
+    elif pm > 55.5:
+        return calcAQI(pm, 200, 151, 150.4, 55.5)  # Unhealthy
+    elif pm > 35.5:
+        return calcAQI(pm, 150, 101, 55.4, 35.5)  # Unhealthy for Sensitive Groups
+    elif pm > 12.1:
+        return calcAQI(pm, 100, 51, 35.4, 12.1)  # Moderate
+    elif pm >= 0:
+        return calcAQI(pm, 50, 0, 12, 0)  # Good
+    else:
+        return 'undefined'
+
+# Calculate AQI from standard ranges
+def calcAQI(Cp, Ih, Il, BPh, BPl):
+    a = (Ih - Il)
+    b = (BPh - BPl)
+    c = (Cp - BPl)
+    return round((a / b) * c + Il)
+
+
 def process_sensor_data(combined_df, selected_field):
-    # Convert timestamp and set as index
+    combined_df['AQI'] = combined_df['pm2.5_atm'].apply(lambda x: aqiFromPM(x))
+    if "pm" in selected_field:
+        selected_field = 'AQI'
+    
     combined_df["time_stamp"] = pd.to_datetime(combined_df["time_stamp"], unit="s")
+    combined_df["time_stamp"] = combined_df["time_stamp"].dt.tz_localize('UTC')
+    combined_df["time_stamp"] = combined_df["time_stamp"].dt.tz_convert('US/Eastern')
     combined_df.set_index("time_stamp", inplace=True)
 
     # Map sensor IDs to location names
     combined_df["location"] = combined_df["sensor_id"].map(sensor_ids)
+    if selected_field == "temperature":
+        combined_df = combined_df.query("location != 'KIB-TS'")
 
     # Create hourly averages for each location
     hourly_data = (
@@ -86,7 +135,7 @@ def process_sensor_data(combined_df, selected_field):
         hovermode="x unified",
     )
 
-    return fig, hourly_data
+    return fig, combined_df.reset_index()[['time_stamp', 'sensor_id', 'location', 'AQI', 'pm2.5_atm', 'humidity', 'temperature']]
 
 
 # Streamlit app layout
@@ -94,9 +143,9 @@ st.title("Purple Air Data for Arlington Woods")
 
 # Sensor mapping
 sensor_ids = {
-    220759: "East 33rd Street",
-    220757: "East 30th Street",
-    220755: "North Catherwood Avenue",
+    220759: "KIB-TS",
+    220757: "KIB:ARWOO99",
+    220755: "SMC",
 }
 
 api_key = st.secrets["API_KEY"]
@@ -104,24 +153,25 @@ api_key = st.secrets["API_KEY"]
 # Date range selection
 col1, col2 = st.columns(2)
 with col1:
-    start_date = st.date_input("Start Date", datetime.now() - timedelta(days=10))
+    start_date = st.date_input("Start Date", datetime(2024, 11, 1))
 with col2:
-    end_date = st.date_input("End Date", datetime.now())
+    end_date = st.date_input("End Date", value=datetime(2024, 11, 21), max_value=datetime(2024, 12, 8))
 
 # Fields selection
+fields = ["pm2.5_atm", "humidity", "temperature"]
 selected_field = st.selectbox(
     "Select Metric to Display",
-    ["pm2.5_alt", "humidity", "temperature"],
+    fields,
     format_func=lambda x: {
-        "pm2.5_alt": "PM2.5",
+        "pm2.5_atm": "US EPA AQI",
         "humidity": "Humidity",
         "temperature": "Temperature",
-    }[x],
+    }[x]
 )
 
 if st.button("Fetch Data"):
     if not api_key:
-        st.error("Please enter an API key")
+        st.error("Please store an API key")
     else:
         start_datetime = datetime.combine(start_date, datetime.min.time())
         end_datetime = datetime.combine(end_date, datetime.max.time())
@@ -155,7 +205,7 @@ if st.button("Fetch Data"):
                         api_key,
                         start_datetime,
                         end_datetime,
-                        "temperature,humidity,pm2.5_alt",
+                        fields
                     )
 
                     if df is not None:
@@ -175,12 +225,3 @@ if st.button("Fetch Data"):
             # Show hourly averaged data
             st.subheader("Hourly Averaged Data")
             st.dataframe(hourly_data)
-
-            # Download button for hourly data
-            csv = hourly_data.to_csv(index=False)
-            st.download_button(
-                label="Download Hourly Data as CSV",
-                data=csv,
-                file_name=f"hourly_averages_{datetime.now().strftime('%Y-%m-%d')}.csv",
-                mime="text/csv",
-            )
